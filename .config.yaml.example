@@ -1,0 +1,28 @@
+# Copy to app/config.yaml and adjust to your cameras
+cameras:
+  - name: cam1
+    ip: 192.168.1.31
+    username: admin
+    password: change-me
+    # 0=main stream profile; often 1=substream
+    profile: 0
+  - name: cam2
+    ip: 192.168.1.32
+    username: admin
+    password: change-me
+
+# Keywords that must appear in event text for it to pass (case-insensitive)
+topics_filter:
+  - Motion
+  - Intrusion
+  - Line
+  - Trip
+  - Cross
+  - Human
+
+# Substrings to ignore entirely (not logged, not processed)
+ignore_filter:
+  - Bandwidth
+
+# Prefer substream index for video clip (0=main, 1=sub1, 2=sub2)
+prefer_stream: 1
