@@ -8,6 +8,9 @@ services:
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID}"
       CLIP_SECONDS: "${CLIP_SECONDS:-10}"
       COOLDOWN_SECONDS: "${COOLDOWN_SECONDS:-20}"
+      DEBUG: "${DEBUG}"
+      CAP_TEST: "${CAP_TEST}"
+
     volumes:
       - ./app/config.yaml:/app/config.yaml:ro
     network_mode: host
