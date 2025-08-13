@@ -505,6 +505,7 @@ def _parse_source_data(source_elem):
     """Parse Source element to extract SimpleItems"""
     source_data = {}
     simple_items = []
+    element_items = []
     
     try:
         for child in source_elem:
@@ -514,9 +515,21 @@ def _parse_source_data(source_elem):
                 item = {}
                 if hasattr(child, 'attrib'):
                     item.update(child.attrib)
-                if child.text:
+                if child.text and child.text.strip():
                     item['Value'] = child.text.strip()
                 simple_items.append(item)
+            elif tag_name == 'ElementItem':
+                # ElementItem(Name=..., Value=complex subtree with shapes)
+                elem_item = {}
+                if hasattr(child, 'attrib') and child.attrib:
+                    elem_item.update(child.attrib)
+                # Parse its children (could include Appearance/Shape/BoundingBox/Polygon)
+                parsed_children = []
+                for ch2 in child:
+                    parsed_children.append(_parse_xml_element(ch2))
+                if parsed_children:
+                    elem_item['Children'] = parsed_children
+                element_items.append(elem_item)
             else:
                 if child.text:
                     source_data[tag_name] = child.text.strip()
@@ -529,6 +542,8 @@ def _parse_source_data(source_elem):
     
     if simple_items:
         source_data['SimpleItem'] = simple_items
+    if element_items:
+        source_data['ElementItem'] = element_items
     
     return source_data
 
@@ -536,6 +551,7 @@ def _parse_data(data_elem):
     """Parse Data element to extract SimpleItems"""
     data_data = {}
     simple_items = []
+    element_items = []
     
     try:
         for child in data_elem:
@@ -545,9 +561,19 @@ def _parse_data(data_elem):
                 item = {}
                 if hasattr(child, 'attrib'):
                     item.update(child.attrib)
-                if child.text:
+                if child.text and child.text.strip():
                     item['Value'] = child.text.strip()
                 simple_items.append(item)
+            elif tag_name == 'ElementItem':
+                elem_item = {}
+                if hasattr(child, 'attrib') and child.attrib:
+                    elem_item.update(child.attrib)
+                parsed_children = []
+                for ch2 in child:
+                    parsed_children.append(_parse_xml_element(ch2))
+                if parsed_children:
+                    elem_item['Children'] = parsed_children
+                element_items.append(elem_item)
             else:
                 if child.text:
                     data_data[tag_name] = child.text.strip()
@@ -560,6 +586,8 @@ def _parse_data(data_elem):
     
     if simple_items:
         data_data['SimpleItem'] = simple_items
+    if element_items:
+        data_data['ElementItem'] = element_items
     
     return data_data
 
@@ -662,6 +690,63 @@ def extract_bboxes(m):
             return
         if isinstance(x, dict):
             keys = {k.lower(): k for k in x.keys()}
+            # If attributes captured under _attributes, merge a view for parsing
+            attr_map = {}
+            if '_attributes' in x and isinstance(x['_attributes'], dict):
+                for ak, av in x['_attributes'].items():
+                    attr_map[ak.lower()] = av
+            # Pattern A: BoundingBox element style {'BoundingBox': {'_attributes': {'x':..,'y':..,'width':..,'height':..}}}
+            if any(k in keys for k in ('boundingbox','bounding_box')):
+                bb_key = keys.get('boundingbox') or keys.get('bounding_box')
+                bb_val = x[bb_key]
+                if isinstance(bb_val, dict):
+                    attrs = bb_val.get('_attributes') if isinstance(bb_val.get('_attributes'), dict) else bb_val
+                    if isinstance(attrs, dict):
+                        xa = attrs.get('x'); ya = attrs.get('y'); wa = attrs.get('width'); ha = attrs.get('height')
+                        if xa is not None and ya is not None and wa is not None and ha is not None:
+                            try:
+                                l = float(xa); t = float(ya)
+                                r = l + float(wa); b = t + float(ha)
+                                add_box(l, t, r, b)
+                            except Exception:
+                                pass
+            # Pattern B: Shape -> Polygon -> Point list (compute bbox)
+            if 'polygon' in keys:
+                poly_key = keys['polygon']
+                poly_val = x[poly_key]
+                # Expect dict with possibly 'Point' list
+                pts = []
+                def collect_points(node):
+                    if isinstance(node, dict):
+                        if 'Point' in node:
+                            pt = node['Point']
+                            if isinstance(pt, list):
+                                for p in pt:
+                                    if isinstance(p, dict):
+                                        attrs = p.get('_attributes') if isinstance(p.get('_attributes'), dict) else p
+                                        try:
+                                            px = float(attrs.get('x'))
+                                            py = float(attrs.get('y'))
+                                            pts.append((px, py))
+                                        except Exception:
+                                            pass
+                            elif isinstance(pt, dict):
+                                attrs = pt.get('_attributes') if isinstance(pt.get('_attributes'), dict) else pt
+                                try:
+                                    px = float(attrs.get('x'))
+                                    py = float(attrs.get('y'))
+                                    pts.append((px, py))
+                                except Exception:
+                                    pass
+                        for v in node.values():
+                            collect_points(v)
+                    elif isinstance(node, list):
+                        for it in node:
+                            collect_points(it)
+                collect_points(poly_val)
+                if pts:
+                    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+                    add_box(min(xs), min(ys), max(xs), max(ys))
             # Pattern 1: left/top/right/bottom
             if all(k in keys for k in ('left','top','right','bottom')):
                 add_box(x[keys['left']], x[keys['top']], x[keys['right']], x[keys['bottom']])
@@ -680,6 +765,14 @@ def extract_bboxes(m):
                             add_box(vals[0], vals[1], vals[2], vals[3])
                 for v in x.values():
                     rec(v)
+            # Recurse into attribute map in case it alone forms a box
+            if attr_map and all(k in attr_map for k in ('x','y','width','height')):
+                try:
+                    l = float(attr_map['x']); t = float(attr_map['y'])
+                    r = l + float(attr_map['width']); b = t + float(attr_map['height'])
+                    add_box(l, t, r, b)
+                except Exception:
+                    pass
         elif isinstance(x, (list, tuple)):
             for it in x:
                 rec(it)
