@@ -51,6 +51,54 @@ def vlog(msg):
             # Be resilient to non-utf8 consoles
             print(str(msg).encode("utf-8", errors="ignore").decode("utf-8", errors="ignore"))
 
+def debug_dump_event(m, name_tag):
+    """Dump full event structure for debugging human detection"""
+    if not DEBUG:
+        return
+    
+    print(f"\n{'='*60}")
+    print(f"[{name_tag}] FULL EVENT DUMP:")
+    print(f"{'='*60}")
+    
+    try:
+        # Try to serialize the full message
+        obj = serialize_object(m)
+        print(f"[{name_tag}] Serialized object:")
+        print(json.dumps(obj, indent=2, default=str))
+    except Exception as e:
+        print(f"[{name_tag}] Failed to serialize object: {e}")
+        
+    # Try to access raw attributes
+    print(f"\n[{name_tag}] Raw message attributes:")
+    try:
+        for attr in dir(m):
+            if not attr.startswith('_'):
+                try:
+                    val = getattr(m, attr)
+                    print(f"  {attr}: {type(val)} = {str(val)[:200]}")
+                except Exception as e:
+                    print(f"  {attr}: <error accessing: {e}>")
+    except Exception as e:
+        print(f"  Error listing attributes: {e}")
+        
+    # Try to access Message specifically
+    print(f"\n[{name_tag}] Message structure:")
+    try:
+        msg = getattr(m, 'Message', None)
+        if msg:
+            print(f"  Message type: {type(msg)}")
+            for attr in dir(msg):
+                if not attr.startswith('_'):
+                    try:
+                        val = getattr(msg, attr)
+                        print(f"    Message.{attr}: {type(val)} = {str(val)[:200]}")
+                    except Exception as e:
+                        print(f"    Message.{attr}: <error: {e}>")
+    except Exception as e:
+        print(f"  Error accessing Message: {e}")
+        
+    print(f"{'='*60}\n")
+
 def tg_send_photo(caption, img_bytes, filename="snapshot.jpg"):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     files = {"photo": (filename, img_bytes, "image/jpeg")}
@@ -296,6 +344,12 @@ def detect_trigger(m, topic_text):
 
     collect_simple_items(obj)
 
+    # Debug output for trigger detection
+    if DEBUG:
+        print(f"    DEBUG detect_trigger: Found {len(simple_items)} SimpleItems for trigger detection")
+        for name, value in simple_items:
+            print(f"      Trigger SimpleItem: Name='{name}' Value='{value}'")
+
     # Heuristics based on SimpleItem Name/Value
     name_val = [(n or "", v) for (n, v) in simple_items]
     for n, v in name_val:
@@ -303,36 +357,61 @@ def detect_trigger(m, topic_text):
         if _to_boolish(v) or (v is None and any(k in ln for k in ('motion','trip','cross','intrusion','tamper','audio','human','person','vehicle'))):
             # Motion
             if 'motion' in ln or ln in {'ismotion','motion'}:
+                if DEBUG:
+                    print(f"    DEBUG: Motion trigger detected via '{n}'='{v}'")
                 return 'Motion'
             # Intrusion
             if 'intrusion' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: Intrusion trigger detected via '{n}'='{v}'")
                 return 'Intrusion'
             # Trip/Cross/Line
             if 'trip' in ln and 'line' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: Tripwire trigger detected via '{n}'='{v}'")
                 return 'Tripwire'
             if 'cross' in ln and 'line' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: CrossLine trigger detected via '{n}'='{v}'")
                 return 'CrossLine'
             if 'line' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: Line trigger detected via '{n}'='{v}'")
                 return 'Line'
             if 'cross' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: Cross trigger detected via '{n}'='{v}'")
                 return 'Cross'
             if 'trip' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: Trip trigger detected via '{n}'='{v}'")
                 return 'Trip'
             # Human/Person
             if 'human' in ln or 'person' in ln or 'people' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: Human trigger detected via '{n}'='{v}'")
                 return 'Human'
             # Vehicle
             if 'vehicle' in ln or 'car' in ln or 'truck' in ln or 'bus' in ln or 'bike' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: Vehicle trigger detected via '{n}'='{v}'")
                 return 'Vehicle'
             # Tamper
             if 'tamper' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: Tamper trigger detected via '{n}'='{v}'")
                 return 'Tamper'
             # Audio
             if 'audio' in ln or 'sound' in ln:
+                if DEBUG:
+                    print(f"    DEBUG: Audio trigger detected via '{n}'='{v}'")
                 return 'Audio'
 
     # Topic path fallback
     tt = (topic_text or '').lower()
+    if DEBUG:
+        print(f"    DEBUG: Checking topic text for trigger: '{tt[:100]}...'")
+    
     m = re.search(r"\b(motion|intrusion|tripwire|crossline|cross|line|human|person|vehicle|tamper|audio)\b", tt)
     if m:
         val = m.group(1)
@@ -342,13 +421,20 @@ def detect_trigger(m, topic_text):
             'line': 'Line',
             'person': 'Human',
         }
-        return mapping.get(val, val.capitalize())
+        result = mapping.get(val, val.capitalize())
+        if DEBUG:
+            print(f"    DEBUG: Trigger '{result}' detected via topic text pattern")
+        return result
 
     # Rule name could hint (e.g., MyMotionDetectorRule)
     rm = re.search(r"\b([A-Za-z]*Motion[A-Za-z]*)\b", tt)
     if rm:
+        if DEBUG:
+            print(f"    DEBUG: Motion trigger detected via rule name pattern")
         return 'Motion'
 
+    if DEBUG:
+        print(f"    DEBUG: No specific trigger detected, defaulting to 'Event'")
     return 'Event'
 
 
@@ -456,22 +542,71 @@ def detect_object_label(m, topic_text):
     """Guess object label like Human, Vehicle, Face using SimpleItems or topic text."""
     obj = _serialize_message(m)
     items = _collect_simple_items(obj)
+    
+    # Debug output for object detection
+    if DEBUG:
+        print(f"    DEBUG detect_object_label: Found {len(items)} SimpleItems")
+        for name, value in items:
+            print(f"      SimpleItem: Name='{name}' Value='{value}'")
+    
     for n, v in items:
         ln = (n or '').lower()
         lv = (str(v) if v is not None else '').lower()
-        if any(w in ln or w in lv for w in ('human', 'person', 'people')):
+        
+        # Extended human detection keywords
+        if any(w in ln or w in lv for w in ('human', 'person', 'people', 'pedestrian', 'man', 'woman', 'body')):
+            if DEBUG:
+                print(f"    DEBUG: Human detected via SimpleItem Name='{n}' Value='{v}'")
             return 'Human'
-        if any(w in ln or w in lv for w in ('vehicle', 'car', 'truck', 'bus', 'bike')):
+        
+        # Vehicle detection
+        if any(w in ln or w in lv for w in ('vehicle', 'car', 'truck', 'bus', 'bike', 'motorcycle', 'auto')):
+            if DEBUG:
+                print(f"    DEBUG: Vehicle detected via SimpleItem Name='{n}' Value='{v}'")
             return 'Vehicle'
-        if any(w in ln or w in lv for w in ('face',)):
+        
+        # Face detection
+        if any(w in ln or w in lv for w in ('face', 'facial')):
+            if DEBUG:
+                print(f"    DEBUG: Face detected via SimpleItem Name='{n}' Value='{v}'")
             return 'Face'
+        
+        # Object type detection (some cameras use generic 'Object' field)
+        if 'object' in ln and lv:
+            if any(w in lv for w in ('human', 'person', 'people', 'pedestrian')):
+                if DEBUG:
+                    print(f"    DEBUG: Human detected via Object field Value='{v}'")
+                return 'Human'
+            if any(w in lv for w in ('vehicle', 'car', 'truck', 'bus')):
+                if DEBUG:
+                    print(f"    DEBUG: Vehicle detected via Object field Value='{v}'")
+                return 'Vehicle'
+        
+        # Detection type fields
+        if 'detection' in ln or 'detect' in ln:
+            if any(w in lv for w in ('human', 'person', 'people')):
+                if DEBUG:
+                    print(f"    DEBUG: Human detected via Detection field Value='{v}'")
+                return 'Human'
+                
+    # Topic text fallback with extended keywords
     tt = (topic_text or '').lower()
-    if re.search(r"\b(human|person|people)\b", tt):
+    if DEBUG:
+        print(f"    DEBUG: Checking topic text: '{tt[:100]}...'")
+    
+    if re.search(r"\b(human|person|people|pedestrian|man|woman|body)\b", tt):
+        if DEBUG:
+            print(f"    DEBUG: Human detected via topic text")
         return 'Human'
-    if re.search(r"\b(vehicle|car|truck|bus|bike)\b", tt):
+    if re.search(r"\b(vehicle|car|truck|bus|bike|motorcycle|auto)\b", tt):
+        if DEBUG:
+            print(f"    DEBUG: Vehicle detected via topic text")
         return 'Vehicle'
-    if re.search(r"\bface\b", tt):
+    if re.search(r"\b(face|facial)\b", tt):
+        if DEBUG:
+            print(f"    DEBUG: Face detected via topic text")
         return 'Face'
+    
     return None
 
 
@@ -740,9 +875,13 @@ class CamWorker(threading.Thread):
                         pass
 
                     for m in messages:
+                        # DEBUGGING: Always dump full event structure first
+                        debug_dump_event(m, self.name_tag)
+                        
                         # Build readable text from event for filtering
                         topic_txt = extract_event_text(m)
                         t_low = topic_txt.lower()
+                        
                         # Ignore noisy events early (e.g., Bandwidth)
                         if IGNORE_FILTER and any(k in t_low for k in IGNORE_FILTER):
                             if DEBUG:
@@ -754,27 +893,33 @@ class CamWorker(threading.Thread):
                                 vlog(f"[{self.name_tag}] Event topic: {short}")
                             except Exception:
                                 pass
-                        if TOPICS_FILTER and not any(k.lower() in t_low for k in TOPICS_FILTER):
-                            if DEBUG:
-                                try:
-                                    trig_dbg = None
-                                    try:
-                                        trig_dbg = detect_trigger(m, topic_txt)
-                                    except Exception:
-                                        pass
-                                    short = topic_txt.replace('\n',' ')[:300]
-                                    if trig_dbg:
-                                        vlog(f"[{self.name_tag}] Skipped (no filter match) [{trig_dbg}]: {short}")
-                                    else:
-                                        vlog(f"[{self.name_tag}] Skipped (no filter match): {short}")
-                                except Exception:
-                                    pass
-                            continue
+                        
+                        # DEBUGGING: Temporarily disable topic filtering to see all events
+                        # Comment out the filter check to see all events
+                        # if TOPICS_FILTER and not any(k.lower() in t_low for k in TOPICS_FILTER):
+                        #     if DEBUG:
+                        #         try:
+                        #             trig_dbg = None
+                        #             try:
+                        #                 trig_dbg = detect_trigger(m, topic_txt)
+                        #             except Exception:
+                        #                 pass
+                        #             short = topic_txt.replace('\n',' ')[:300]
+                        #             if trig_dbg:
+                        #                 vlog(f"[{self.name_tag}] Skipped (no filter match) [{trig_dbg}]: {short}")
+                        #             else:
+                        #                 vlog(f"[{self.name_tag}] Skipped (no filter match): {short}")
+                        #         except Exception:
+                        #             pass
+                        #     continue
 
-                        now = time.time()
-                        if now - self.last_fire < COOLDOWN_SECONDS:
-                            continue
-                        self.last_fire = now
+                        # Always process event for debugging (ignore cooldown too)
+                        # now = time.time()
+                        # if now - self.last_fire < COOLDOWN_SECONDS:
+                        #     continue
+                        # self.last_fire = now
+
+                        print(f"[{self.name_tag}] Processing event for analysis...")
 
                         # Detect trigger and object details
                         trig = 'Event'
@@ -793,70 +938,28 @@ class CamWorker(threading.Thread):
                         except Exception:
                             pass
 
-                        ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
-                        details = []
-                        if obj_label:
-                            details.append(obj_label)
+                        # Debug output for analysis
+                        print(f"[{self.name_tag}] ANALYSIS RESULTS:")
+                        print(f"  Trigger detected: {trig}")
+                        print(f"  Object label: {obj_label}")
+                        print(f"  Bounding boxes: {len(boxes)} found")
                         if boxes:
-                            details.append(f"boxes={len(boxes)}")
+                            for i, box in enumerate(boxes):
+                                print(f"    Box {i+1}: {box}")
+                        
+                        # Extract and display all SimpleItem data
                         try:
                             src_kv, dat_kv = extract_source_data_kv(m)
-                            if 'Rule' in dat_kv:
-                                details.append(f"rule={dat_kv['Rule']}")
-                            if 'VideoAnalyticsConfigurationToken' in src_kv:
-                                details.append(f"analytics={src_kv['VideoAnalyticsConfigurationToken']}")
-                            if 'VideoSourceConfigurationToken' in src_kv:
-                                details.append(f"source={src_kv['VideoSourceConfigurationToken']}")
+                            print(f"  Source data: {src_kv}")
+                            print(f"  Data fields: {dat_kv}")
                             src_vals = extract_source_values(m)
-                            if src_vals:
-                                details.append(f"srcval={src_vals[0]}")
-                        except Exception:
-                            pass
-                        extra = (" ".join(details)) if details else ""
-                        caption = f"📹 {self.name_tag} [{trig}] @ {ts} {extra}\n{topic_txt[:180]}".strip()
-                        print(f"[{self.name_tag}] Event matched → sending Telegram...")
-
-                        # Snapshot
-                        snap_url = sanitize_snapshot_uri(snapshot_uri, ip)
-                        try:
-                            # Try Basic first
-                            r = requests.get(snap_url, timeout=10, stream=True, auth=HTTPBasicAuth(user, pwd))
-                            if r.status_code == 401:
-                                # Fallback to Digest
-                                r = requests.get(snap_url, timeout=10, stream=True, auth=HTTPDigestAuth(user, pwd))
-                            r.raise_for_status()
-                            img = r.content
-                            # annotate if we have boxes
-                            try:
-                                img = annotate_snapshot(img, boxes, label=obj_label or trig)
-                            except Exception:
-                                pass
-                            tg_send_photo(caption, img, "snapshot.jpg")
+                            print(f"  Source values: {src_vals}")
                         except Exception as e:
-                            print(f"[{self.name_tag}] snapshot failed: {e}")
+                            print(f"  Error extracting data: {e}")
 
-                        # Video clip
-                        try:
-                            # Inject credentials in RTSP if missing
-                            if "@" not in stream_uri and user:
-                                parsed = urlparse(stream_uri)
-                                netloc = parsed.netloc
-                                if not netloc:
-                                    # some cams return only path; build from IP
-                                    netloc = f"{ip}:554"
-                                if ":" not in netloc:
-                                    netloc += ":554"
-                                netloc = f"{user}:{pwd}@{netloc}"
-                                stream_uri = urlunparse((parsed.scheme or "rtsp", netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-                            out = f"/app/clip_{self.name_tag}_{int(now)}.mp4"
-                            ffmpeg_record(stream_uri, CLIP_SECONDS, out)
-                            tg_send_video(caption, out)
-                            try:
-                                os.remove(out)
-                            except OSError:
-                                pass
-                        except Exception as e:
-                            print(f"[{self.name_tag}] video failed: {e}")
+                        # Skip actual Telegram sending for debugging
+                        print(f"[{self.name_tag}] Event analysis complete. (Telegram sending disabled for debugging)")
+                        print(f"{'='*60}\n")
 
                 time.sleep(1)
 
