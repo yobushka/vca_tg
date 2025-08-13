@@ -337,11 +337,9 @@ def detect_trigger(m, topic_text):
     Looks into Message.Data/Source SimpleItem Name/Value pairs and topic text.
     Returns a short label like 'Motion', 'Intrusion', 'CrossLine', 'Human', etc.
     """
-    try:
-        obj = serialize_object(getattr(m, 'Message', m))
-    except Exception:
-        obj = None
-
+    # Use our improved serialization
+    obj = _serialize_message(m)
+    
     simple_items = []
 
     def collect_simple_items(x):
