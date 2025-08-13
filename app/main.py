@@ -35,6 +35,7 @@ CAP_TEST = int(os.environ.get("CAP_TEST", "1"))
 RAW_XML_SAVE = int(os.environ.get("RAW_XML_SAVE", "0"))  # 1 -> also save each raw XML to files
 RAW_XML_DIR = os.environ.get("RAW_XML_DIR", "raw_xml")
 RAW_XML_MAX_PRINT = int(os.environ.get("RAW_XML_MAX_PRINT", "4000"))  # truncate console output
+DUMP_EVENT_PROPERTIES = int(os.environ.get("DUMP_EVENT_PROPERTIES", "1"))  # dump GetEventProperties once per camera
 
 _raw_xml_counter = itertools.count(1)
 
@@ -1012,6 +1013,61 @@ class CamWorker(threading.Thread):
         self.last_fire = 0
         self.name_tag = camcfg.get("name") or camcfg["ip"]
         self.stop_flag = False
+        self.event_props_dumped = False
+
+    def _dump_event_properties(self, events):
+        if self.event_props_dumped or not DUMP_EVENT_PROPERTIES:
+            return
+        try:
+            props = events.GetEventProperties()
+        except Exception as e:
+            vlog(f"[{self.name_tag}] GetEventProperties failed: {e}")
+            self.event_props_dumped = True
+            return
+        try:
+            ser = serialize_object(props)
+        except Exception:
+            ser = None
+
+        topic_paths = []
+        def walk(node, path):
+            if node is None:
+                return
+            if isinstance(node, dict):
+                name = None
+                if 'Name' in node and isinstance(node['Name'], str):
+                    name = node['Name']
+                elif 'name' in node and isinstance(node['name'], str):
+                    name = node['name']
+                new_path = path
+                if name:
+                    new_path = path + [name]
+                    topic_paths.append('/'.join(new_path))
+                for k, v in node.items():
+                    if k.lower() in {'topic','topicset','subtopic'} or isinstance(v, (list, dict)):
+                        walk(v, new_path)
+            elif isinstance(node, list):
+                for it in node:
+                    walk(it, path)
+        try:
+            if isinstance(ser, dict) and 'TopicSet' in ser:
+                walk(ser['TopicSet'], [])
+        except Exception:
+            pass
+        try:
+            Path(RAW_XML_DIR).mkdir(parents=True, exist_ok=True)
+            base = Path(RAW_XML_DIR) / f"event_properties_{self.name_tag}"
+            if ser is not None:
+                with open(str(base)+'.json','w',encoding='utf-8') as fh:
+                    json.dump(ser, fh, indent=2, ensure_ascii=False)
+            if topic_paths:
+                with open(str(base)+'_topics.txt','w',encoding='utf-8') as fh:
+                    for p in sorted(set(topic_paths)):
+                        fh.write(p+'\n')
+            vlog(f"[{self.name_tag}] EventProperties dumped ({len(topic_paths)} topic paths)")
+        except Exception as e:
+            vlog(f"[{self.name_tag}] EventProperties dump error: {e}")
+        self.event_props_dumped = True
 
     def run(self):
         ip = self.cfg["ip"]
@@ -1072,6 +1128,11 @@ class CamWorker(threading.Thread):
                             vlog(f"[{self.name_tag}] Event caps: WSPullPoint={ws_pull} WSBase={ws_base} MaxPullPoints={max_pp}")
                         except Exception as e:
                             vlog(f"[{self.name_tag}] GetEventServiceCapabilities failed: {e}")
+                        # Dump event properties once
+                        try:
+                            self._dump_event_properties(events)
+                        except Exception:
+                            pass
                     except Exception as e:
                         vlog(f"[{self.name_tag}] Capability probe error: {e}")
 
