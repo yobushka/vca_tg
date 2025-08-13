@@ -597,15 +597,33 @@ def _collect_simple_items(obj):
             if isinstance(si, list):
                 for it in si:
                     if isinstance(it, dict):
-                        items.append((str(it.get('Name', '')), it.get('Value')))
+                        name = it.get('Name', '')
+                        value = it.get('Value')
+                        items.append((str(name), value))
             elif isinstance(si, dict):
-                items.append((str(si.get('Name', '')), si.get('Value')))
-            for v in x.values():
-                rec(v)
+                name = si.get('Name', '')
+                value = si.get('Value')
+                items.append((str(name), value))
+            # Also check for Source and Data containers
+            for key in ['Source', 'Data']:
+                if key in x:
+                    rec(x[key])
+            # Recurse into other dict values
+            for k, v in x.items():
+                if k not in ['SimpleItem', 'Source', 'Data']:
+                    rec(v)
         elif isinstance(x, (list, tuple)):
             for it in x:
                 rec(it)
-    rec(obj)
+    
+    # Use our improved message serialization
+    if hasattr(obj, 'Message') or hasattr(obj, 'Data') or hasattr(obj, 'Source'):
+        # This looks like a message object
+        serialized = _serialize_message(obj)
+        rec(serialized)
+    else:
+        rec(obj)
+    
     return items
 
 
