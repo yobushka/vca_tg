@@ -166,6 +166,7 @@ def extract_event_text(m):
     """Build a readable string from ONVIF NotificationMessage for filtering.
     Tries, in order:
     - Topic._value_1 when it's a string
+    - Parse XML Message element directly
     - Flatten XML elements (SimpleItem Name/Value, tag local names)
     - Fallback to serialized dict traversal
     """
@@ -251,6 +252,7 @@ def extract_event_text(m):
                 pass
 
     parts = []
+    
     # Topic path (often contains RuleEngine/Line/Motion)
     try:
         t = getattr(m, 'Topic', None)
@@ -262,7 +264,21 @@ def extract_event_text(m):
                 collect_any(val, parts)
     except Exception:
         pass
-    # Message payload (SimpleItem Name/Value are here)
+    
+    # Direct XML Message parsing (new approach)
+    try:
+        msg = getattr(m, 'Message', None)
+        if msg is not None and hasattr(msg, '_value_1') and hasattr(msg._value_1, 'tag'):
+            # This is an XML element, parse it directly
+            xml_elem = msg._value_1
+            if DEBUG:
+                print(f"    DEBUG extract_event_text: Processing XML Message element")
+            flatten_xml(xml_elem, parts)
+    except Exception as e:
+        if DEBUG:
+            print(f"    DEBUG extract_event_text: XML parsing failed: {e}")
+    
+    # Message payload (SimpleItem Name/Value are here) - fallback method
     try:
         msg = getattr(m, 'Message', None)
         if msg is not None:
@@ -274,6 +290,7 @@ def extract_event_text(m):
                     pass
     except Exception:
         pass
+    
     # Absolute fallback — serialize entire message
     if not parts:
         try:
@@ -298,7 +315,12 @@ def extract_event_text(m):
     except Exception:
         pass
 
-    return " ".join([p for p in parts if isinstance(p, str) and p])
+    result = " ".join([p for p in parts if isinstance(p, str) and p])
+    
+    if DEBUG:
+        print(f"    DEBUG extract_event_text result: '{result[:100]}...'")
+    
+    return result
 
 
 def _to_boolish(v):
@@ -438,9 +460,126 @@ def detect_trigger(m, topic_text):
     return 'Event'
 
 
+def _parse_xml_element(elem):
+    """Parse XML element to extract SimpleItems and other data"""
+    if elem is None:
+        return {}
+    
+    result = {}
+    
+    # Try to process XML element using lxml if available
+    if ET is not None and hasattr(elem, 'tag'):
+        try:
+            # Extract text content
+            if elem.text and elem.text.strip():
+                result['_text'] = elem.text.strip()
+            
+            # Extract attributes
+            if hasattr(elem, 'attrib') and elem.attrib:
+                result['_attributes'] = dict(elem.attrib)
+            
+            # Process children
+            for child in elem:
+                tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                
+                if tag_name == 'Source':
+                    result['Source'] = _parse_source_data(child)
+                elif tag_name == 'Data':
+                    result['Data'] = _parse_data(child)
+                else:
+                    # Generic child processing
+                    child_data = _parse_xml_element(child)
+                    if tag_name in result:
+                        if not isinstance(result[tag_name], list):
+                            result[tag_name] = [result[tag_name]]
+                        result[tag_name].append(child_data)
+                    else:
+                        result[tag_name] = child_data
+                        
+        except Exception as e:
+            if DEBUG:
+                print(f"    DEBUG: XML parsing error: {e}")
+            result['_error'] = str(e)
+    
+    return result
+
+def _parse_source_data(source_elem):
+    """Parse Source element to extract SimpleItems"""
+    source_data = {}
+    simple_items = []
+    
+    try:
+        for child in source_elem:
+            tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+            
+            if tag_name == 'SimpleItem':
+                item = {}
+                if hasattr(child, 'attrib'):
+                    item.update(child.attrib)
+                if child.text:
+                    item['Value'] = child.text.strip()
+                simple_items.append(item)
+            else:
+                if child.text:
+                    source_data[tag_name] = child.text.strip()
+                elif hasattr(child, 'attrib'):
+                    source_data[tag_name] = dict(child.attrib)
+    
+    except Exception as e:
+        if DEBUG:
+            print(f"    DEBUG: Source parsing error: {e}")
+    
+    if simple_items:
+        source_data['SimpleItem'] = simple_items
+    
+    return source_data
+
+def _parse_data(data_elem):
+    """Parse Data element to extract SimpleItems"""
+    data_data = {}
+    simple_items = []
+    
+    try:
+        for child in data_elem:
+            tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+            
+            if tag_name == 'SimpleItem':
+                item = {}
+                if hasattr(child, 'attrib'):
+                    item.update(child.attrib)
+                if child.text:
+                    item['Value'] = child.text.strip()
+                simple_items.append(item)
+            else:
+                if child.text:
+                    data_data[tag_name] = child.text.strip()
+                elif hasattr(child, 'attrib'):
+                    data_data[tag_name] = dict(child.attrib)
+    
+    except Exception as e:
+        if DEBUG:
+            print(f"    DEBUG: Data parsing error: {e}")
+    
+    if simple_items:
+        data_data['SimpleItem'] = simple_items
+    
+    return data_data
+
+
 def _serialize_message(m):
     try:
-        return serialize_object(getattr(m, 'Message', m))
+        # First try to get the raw Message XML element
+        msg = getattr(m, 'Message', None)
+        if msg is not None:
+            # Check if it's an XML element that we need to parse
+            if hasattr(msg, '_value_1') and hasattr(msg._value_1, 'tag'):
+                # This is an XML element, parse it directly
+                return _parse_xml_element(msg._value_1)
+            else:
+                # Try standard serialization
+                return serialize_object(msg)
+        else:
+            return serialize_object(m)
     except Exception:
         try:
             return serialize_object(m)
