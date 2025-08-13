@@ -10,7 +10,11 @@ services:
       COOLDOWN_SECONDS: "${COOLDOWN_SECONDS:-20}"
       DEBUG: "${DEBUG}"
       CAP_TEST: "${CAP_TEST}"
+      RAW_XML_SAVE: "${RAW_XML_SAVE:-0}"
+      RAW_XML_DIR: "${RAW_XML_DIR:-raw_xml}"
+      RAW_XML_MAX_PRINT: "${RAW_XML_MAX_PRINT:-4000}"
 
     volumes:
       - ./app/config.yaml:/app/config.yaml:ro
+      - ./raw_xml:/app/raw_xml
     network_mode: host

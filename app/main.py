@@ -11,6 +11,8 @@ from zeep.helpers import serialize_object
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 import re
 from io import BytesIO
+import itertools
+from pathlib import Path
 try:
     from PIL import Image, ImageDraw, ImageFont
 except Exception:
@@ -30,6 +32,11 @@ CLIP_SECONDS = int(os.environ.get("CLIP_SECONDS", "10"))
 COOLDOWN_SECONDS = int(os.environ.get("COOLDOWN_SECONDS", "20"))
 DEBUG = int(os.environ.get("DEBUG", "1"))
 CAP_TEST = int(os.environ.get("CAP_TEST", "1"))
+RAW_XML_SAVE = int(os.environ.get("RAW_XML_SAVE", "0"))  # 1 -> also save each raw XML to files
+RAW_XML_DIR = os.environ.get("RAW_XML_DIR", "raw_xml")
+RAW_XML_MAX_PRINT = int(os.environ.get("RAW_XML_MAX_PRINT", "4000"))  # truncate console output
+
+_raw_xml_counter = itertools.count(1)
 
 if not BOT_TOKEN or not CHAT_ID:
     raise SystemExit("Please set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars.")
@@ -51,6 +58,69 @@ def vlog(msg):
             # Be resilient to non-utf8 consoles
             print(str(msg).encode("utf-8", errors="ignore").decode("utf-8", errors="ignore"))
 
+
+def _extract_raw_xml_element(m):
+    """Return raw XML unicode string for m.Message._value_1 if available."""
+    try:
+        msg = getattr(m, 'Message', None)
+        if msg is not None and hasattr(msg, '_value_1'):
+            elem = getattr(msg, '_value_1')
+            if ET is not None and hasattr(elem, 'tag'):
+                try:
+                    return ET.tostring(elem, encoding='unicode')
+                except Exception:
+                    # Fallback: bytes decode
+                    try:
+                        return ET.tostring(elem, encoding='utf-8').decode('utf-8', 'ignore')
+                    except Exception:
+                        return None
+    except Exception:
+        return None
+    return None
+
+
+def _maybe_dump_raw_xml(m, name_tag, stage):
+    """Dump raw XML (print + optional save) once per stage per message."""
+    if not DEBUG:
+        return
+    try:
+        dumped = getattr(m, '_raw_xml_dumped_stages', None)
+        if dumped is None:
+            dumped = set()
+            try:
+                setattr(m, '_raw_xml_dumped_stages', dumped)
+            except Exception:
+                pass
+        if stage in dumped:
+            return
+        xml_str = _extract_raw_xml_element(m)
+        if not xml_str:
+            return
+        dumped.add(stage)
+        # Print (truncate for readability)
+        header = f"[{name_tag}] RAW XML ({stage}) length={len(xml_str)}"
+        print("\n" + header)
+        print("-" * len(header))
+        if len(xml_str) > RAW_XML_MAX_PRINT:
+            print(xml_str[:RAW_XML_MAX_PRINT] + f"\n...<truncated {len(xml_str)-RAW_XML_MAX_PRINT} chars>...")
+        else:
+            print(xml_str)
+        # Optional file save
+        if RAW_XML_SAVE:
+            try:
+                Path(RAW_XML_DIR).mkdir(parents=True, exist_ok=True)
+                ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')
+                idx = next(_raw_xml_counter)
+                safe_cam = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(name_tag))[:50]
+                fname = f"{ts}_{idx:06d}_{safe_cam}_{stage}.xml"
+                fpath = Path(RAW_XML_DIR) / fname
+                with open(fpath, 'w', encoding='utf-8') as fh:
+                    fh.write(xml_str)
+            except Exception as e:
+                print(f"[{name_tag}] RAW XML save failed: {e}")
+    except Exception as e:
+        print(f"[{name_tag}] RAW XML dump error: {e}")
+
 def debug_dump_event(m, name_tag):
     """Dump full event structure for debugging human detection"""
     if not DEBUG:
@@ -67,6 +137,9 @@ def debug_dump_event(m, name_tag):
         print(json.dumps(obj, indent=2, default=str))
     except Exception as e:
         print(f"[{name_tag}] Failed to serialize object: {e}")
+
+    # Raw XML dump (stage 'debug_dump_event')
+    _maybe_dump_raw_xml(m, name_tag, 'debug_dump_event')
         
     # Try to access raw attributes
     print(f"\n[{name_tag}] Raw message attributes:")
@@ -332,11 +405,13 @@ def _to_boolish(v):
     return s in {"true", "1", "yes", "on"}
 
 
-def detect_trigger(m, topic_text):
+def detect_trigger(m, topic_text, name_tag='unknown'):
     """Best-effort detection of the fired trigger (e.g., Motion, Tripwire).
     Looks into Message.Data/Source SimpleItem Name/Value pairs and topic text.
     Returns a short label like 'Motion', 'Intrusion', 'CrossLine', 'Human', etc.
     """
+    # Raw XML dump early (stage 'detect_trigger')
+    _maybe_dump_raw_xml(m, name_tag, 'detect_trigger')
     # Use our improved serialization
     obj = _serialize_message(m)
     
@@ -661,12 +736,13 @@ def _try_parse_float_list(s):
         return None
 
 
-def extract_bboxes(m):
+def extract_bboxes(m, name_tag='unknown'):
     """Extract bounding boxes from ONVIF analytics message.
     Returns a list of dicts: [{'l':..,'t':..,'r':..,'b':..,'normalized':True/False}]
     Heuristics: looks for keys like left/top/right/bottom or x/y/width/height,
     or comma-separated strings under keys containing 'box', 'rect', 'roi'.
     """
+    _maybe_dump_raw_xml(m, name_tag, 'extract_bboxes')
     obj = _serialize_message(m)
     boxes = []
 
@@ -786,8 +862,9 @@ def extract_bboxes(m):
     return boxes
 
 
-def detect_object_label(m, topic_text):
+def detect_object_label(m, topic_text, name_tag='unknown'):
     """Guess object label like Human, Vehicle, Face using SimpleItems or topic text."""
+    _maybe_dump_raw_xml(m, name_tag, 'detect_object_label')
     obj = _serialize_message(m)
     items = _collect_simple_items(obj)
     
@@ -1174,17 +1251,20 @@ class CamWorker(threading.Thread):
                         obj_label = None
                         boxes = []
                         try:
-                            trig = detect_trigger(m, topic_txt)
+                            trig = detect_trigger(m, topic_txt, self.name_tag)
                         except Exception:
                             pass
                         try:
-                            obj_label = detect_object_label(m, topic_txt)
+                            obj_label = detect_object_label(m, topic_txt, self.name_tag)
                         except Exception:
                             pass
                         try:
-                            boxes = extract_bboxes(m)
+                            boxes = extract_bboxes(m, self.name_tag)
                         except Exception:
                             pass
+
+                        # Raw XML after full parsing (stage 'post_parse')
+                        _maybe_dump_raw_xml(m, self.name_tag, 'post_parse')
 
                         # Debug output for analysis
                         print(f"[{self.name_tag}] ANALYSIS RESULTS:")
