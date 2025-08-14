@@ -3,7 +3,7 @@
 
 # Camera configuration (contains passwords)
 app/config.yaml
-
+scripts/
 # Python
 __pycache__/
 *.py[cod]

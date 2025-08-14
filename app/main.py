@@ -397,6 +397,54 @@ def extract_event_text(m):
     return result
 
 
+def _extract_event_raw_text(m):
+    """Extract raw text content from ONVIF message for HumanShapeAlarm pattern detection."""
+    try:
+        # Try to get the raw XML content first
+        raw_xml = _extract_raw_xml_element(m)
+        if raw_xml:
+            return raw_xml
+        
+        # Fallback: serialize and convert to string
+        obj = _serialize_message(m)
+        return str(obj) if obj else ''
+    except Exception:
+        return ''
+
+
+def _detect_humanshape_from_timeline(raw_text):
+    """
+    Detect HumanShapeAlarmOn/Off patterns in raw text content.
+    Based on findings from PCAP analysis where these appear as JSON timeline entries.
+    Returns 'Human' if HumanShapeAlarmOn found, None otherwise.
+    """
+    if not raw_text:
+        return None
+    
+    # Convert to lowercase for case-insensitive matching
+    text_lower = raw_text.lower()
+    
+    # Look for HumanShapeAlarm patterns
+    if 'humanshapealarmon' in text_lower:
+        return 'Human'
+    elif 'humanshapealarmoff' in text_lower:
+        return 'Human'  # Both On and Off indicate human detection activity
+    
+    # Alternative patterns that might be used
+    humanshape_patterns = [
+        'humanshapealarm',
+        'human_shape_alarm',
+        'humanshape',
+        'human shape'
+    ]
+    
+    for pattern in humanshape_patterns:
+        if pattern in text_lower and ('on' in text_lower or 'off' in text_lower or 'true' in text_lower):
+            return 'Human'
+    
+    return None
+
+
 def _to_boolish(v):
     if isinstance(v, bool):
         return v
@@ -502,6 +550,15 @@ def detect_trigger(m, topic_text, name_tag='unknown'):
                 if DEBUG:
                     print(f"    DEBUG: Audio trigger detected via '{n}'='{v}'")
                 return 'Audio'
+
+    # Check for HumanShapeAlarm patterns in serialized data
+    raw_text = _extract_event_raw_text(m)
+    if raw_text:
+        humanshape_trigger = _detect_humanshape_from_timeline(raw_text)
+        if humanshape_trigger:
+            if DEBUG:
+                print(f"    DEBUG: {humanshape_trigger} trigger detected via HumanShapeAlarm timeline")
+            return humanshape_trigger
 
     # Topic path fallback
     tt = (topic_text or '').lower()
@@ -874,6 +931,13 @@ def detect_object_label(m, topic_text, name_tag='unknown'):
         print(f"    DEBUG detect_object_label: Found {len(items)} SimpleItems")
         for name, value in items:
             print(f"      SimpleItem: Name='{name}' Value='{value}'")
+    
+    # Check for HumanShapeAlarm in raw content first
+    raw_text = _extract_event_raw_text(m)
+    if raw_text and _detect_humanshape_from_timeline(raw_text):
+        if DEBUG:
+            print(f"    DEBUG: Human detected via HumanShapeAlarm timeline")
+        return 'Human'
     
     for n, v in items:
         ln = (n or '').lower()
